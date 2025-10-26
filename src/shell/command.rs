@@ -1,6 +1,8 @@
+use colored::*;
+use indicatif::{ProgressBar, ProgressStyle};
 use std::error::Error;
+use std::{thread, time::Duration};
 
-/// 支持所有的命令
 #[derive(Debug)]
 pub enum Command {
     Help,
@@ -20,26 +22,36 @@ pub enum Command {
 
 pub fn execute_command(cmd: &Command, current_dir: &mut String) -> Result<(), Box<dyn Error>> {
     match cmd {
-        Command::Help => {
-            print_help();
-        }
+        Command::Help => print_help(),
         Command::Ls => {
-            println!(".   ..   [dummy files]");
+            println!("📂  .");
+            println!("📁  ..");
+            println!("📄  example.txt");
         }
-        Command::Pwd => {
-            println!("{}", current_dir);
-        }
+        Command::Pwd => println!("📍 {}", current_dir.cyan()),
         Command::Mkdir(name) => {
-            println!("Created directory: {}/{}", current_dir, name);
+            println!(
+                "✅ Created directory: {}",
+                format!("{}/{}", current_dir, name).green()
+            );
         }
         Command::Rmdir(name) => {
-            println!("Removed directory: {}/{}", current_dir, name);
+            println!(
+                "🗑️ Removed directory: {}",
+                format!("{}/{}", current_dir, name).red()
+            );
         }
         Command::Create(name) => {
-            println!("Created file: {}/{}", current_dir, name);
+            println!(
+                "📝 Created file: {}",
+                format!("{}/{}", current_dir, name).green()
+            );
         }
         Command::Rm(name) => {
-            println!("Removed file: {}/{}", current_dir, name);
+            println!(
+                "❌ Deleted file: {}",
+                format!("{}/{}", current_dir, name).red()
+            );
         }
         Command::Cd(path) => {
             if path == ".." {
@@ -55,34 +67,59 @@ pub fn execute_command(cmd: &Command, current_dir: &mut String) -> Result<(), Bo
                 }
                 current_dir.push_str(path);
             }
+            println!("📂 Moved to {}", current_dir.blue());
         }
         Command::Read(file) => {
-            println!("Reading file: {}/{}", current_dir, file);
-            println!("(mock content)");
+            println!(
+                "📖 Reading file: {}",
+                format!("{}/{}", current_dir, file).cyan()
+            );
+            println!("{}", "(mock content: Hello World)".bright_black());
         }
         Command::Write(file, content) => {
-            println!("Writing to file: {}/{}", current_dir, file);
-            println!("> {}", content);
+            println!(
+                "✏️  Writing to {}",
+                format!("{}/{}", current_dir, file).cyan()
+            );
+            println!("{} {}", "✅ Content:".green(), content);
         }
         Command::Stat(file) => {
-            println!("Stat for file: {}/{}", current_dir, file);
-            println!("inode=1, size=42 bytes, type=file");
+            println!(
+                "{}\n{}: {}\n{}: {}\n{}: {} bytes\n",
+                "📊 File Info".bright_yellow().bold(),
+                "Name".blue(),
+                file,
+                "Type".blue(),
+                "File",
+                "Size".blue(),
+                42
+            );
         }
         Command::Format => {
-            println!("Formatting virtual disk... done!");
+            println!("💾 Formatting virtual disk...");
+            let pb = ProgressBar::new(100);
+            pb.set_style(
+                ProgressStyle::with_template("[{bar:40.green/black}] {pos:>3}% {msg}")
+                    .unwrap()
+                    .progress_chars("#>-"),
+            );
+            for i in 0..=100 {
+                pb.set_position(i);
+                thread::sleep(Duration::from_millis(20));
+            }
+            pb.finish_with_message("✅ Disk formatted successfully!");
         }
-        Command::Exit => {
-            println!("Exiting MiniFS shell...");
-        }
+        Command::Exit => println!("{}", "👋 Exiting MiniFS shell...".yellow().bold()),
     }
 
     Ok(())
 }
 
 fn print_help() {
+    println!("{}", "📘 MiniFS Commands".bright_cyan().bold());
     println!(
-        r#"MiniFS Command List:
----------------------------------
+        "{}",
+        "
   ls                 List files in current directory
   pwd                Print current path
   mkdir <dir>        Create directory
@@ -96,6 +133,7 @@ fn print_help() {
   format             Format virtual disk
   help               Show this help message
   exit               Quit the shell
----------------------------------"#
+"
+        .bright_black()
     );
 }

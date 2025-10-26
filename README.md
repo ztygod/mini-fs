@@ -35,8 +35,7 @@
 ```
 mini_fs/
 ├── src/
-│   ├── main.rs              # 程序入口，使用 clap 管理 CLI 与 Shell 模式
-│   │
+│   ├── main.rs              # 程序入口
 │   ├── disk/                # 磁盘层
 │   │   ├── mod.rs
 │   │   ├── disk.rs          # 虚拟磁盘块读写
