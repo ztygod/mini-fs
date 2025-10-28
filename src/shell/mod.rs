@@ -9,20 +9,19 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use reedline::{DefaultCompleter, DefaultPrompt, DefaultPromptSegment, Reedline, Signal};
-use std::{
-    fs::ReadDir,
-    io::{self, stdout, Write},
-    path::PathBuf,
-    thread,
-    time::Duration,
+use reedline::{
+    default_emacs_keybindings, ColumnarMenu, DefaultCompleter, DefaultPrompt, Emacs,
+    FileBackedHistory, KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+    Signal,
 };
+use std::{io::stdout, path::PathBuf, thread, time::Duration};
+use whoami::fallible;
 
 pub fn start_shell() {
     boot_animation();
 
     let username = whoami::username();
-    let hostname = whoami::hostname();
+    let hostname = fallible::hostname().unwrap();
     let mut current_dir = String::from("/");
 
     println!(
@@ -36,35 +35,54 @@ pub fn start_shell() {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".minifs_history");
 
-    let mut line_editor = Reedline::create().with_history(Box::new(
-        reedline::FileBackedHistory::with_file(100, histroy_path.clone()).unwrap(),
-    ));
-
     // 命令补全
     let commands = vec![
         "help", "ls", "pwd", "mkdir", "rmdir", "create", "rm", "cd", "read", "write", "stat",
         "format", "exit",
-    ];
-    let completer = reedline::DefaultCompleter::new_with_wordlen(commands.clone(), 2);
-    line_editor = line_editor.with_completer(Box::new(completer));
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
 
-    let prompt = DefaultPrompt::new(
-        DefaultPromptSegment::BasicLeft(format!(
-            "{}@{}",
-            username.green().bold(),
-            hostname.cyan().bold()
-        )),
-        DefaultPromptSegment::BasicRight("MiniFS".bright_blue().bold().to_string()),
+    let completer = Box::new(DefaultCompleter::new_with_wordlen(commands.clone(), 2));
+
+    // 使用互动菜单从补全器中选择选项
+    let menu = Box::new(ColumnarMenu::default().with_name("completion_menu"));
+
+    // 设置所需的键位绑定
+    let mut keybindings = default_emacs_keybindings();
+    keybindings.add_binding(
+        KeyModifiers::NONE,
+        KeyCode::Tab,
+        ReedlineEvent::UntilFound(vec![
+            ReedlineEvent::Menu("completion_menu".to_string()),
+            ReedlineEvent::MenuNext,
+        ]),
     );
 
+    let edit_mode = Box::new(Emacs::new(keybindings));
+    let mut line_editor = Reedline::create()
+        .with_history(Box::new(
+            FileBackedHistory::with_file(100, histroy_path.clone()).unwrap(),
+        ))
+        .with_completer(completer)
+        .with_menu(ReedlineMenu::EngineCompleter(menu))
+        .with_edit_mode(edit_mode);
+
     loop {
-        let full_prompt = format!(
-            "{}:{}> ",
-            format!("{}@{}", username, hostname).green(),
+        let left_prompt = format!(
+            "{}@{}:{}",
+            username.green().bold(),
+            hostname.cyan().bold(),
             current_dir.blue()
         );
 
-        let input = line_editor.read_line(&prompt.clone().with_new_prompt_left(full_prompt));
+        let prompt = DefaultPrompt::new(
+            reedline::DefaultPromptSegment::Basic(left_prompt),
+            reedline::DefaultPromptSegment::Basic("MiniFS".bright_blue().bold().to_string()),
+        );
+
+        let input = line_editor.read_line(&prompt);
 
         match input {
             Ok(Signal::Success(buffer)) => {
@@ -103,16 +121,15 @@ pub fn start_shell() {
             }
         }
     }
-
-    println!("{}", "GoodBye!".bright_yellow());
 }
 
-///动态欢迎动画
+// 动态欢迎动画
 fn boot_animation() {
     let mut stdout = stdout();
 
     execute!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0)).unwrap();
     println!("{}", "[MiniFS Booting...]".bright_yellow().bold());
+
     thread::sleep(Duration::from_millis(300));
 
     let steps = vec![
