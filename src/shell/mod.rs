@@ -2,7 +2,7 @@ pub mod command;
 pub mod parse;
 
 use crate::{
-    disk::perform_disk_initialization,
+    disk,
     fs::FileSystem,
     shell::{command::execute_command, parse::parse_command},
 };
@@ -23,6 +23,7 @@ use std::{io::stdout, path::PathBuf, sync::mpsc, thread, time::Duration};
 use whoami::fallible;
 
 // 启动信息和进度更新的消息类型
+#[derive(Debug)]
 pub enum BootProgress {
     Step(&'static str),
     Progress(u64),

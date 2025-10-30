@@ -1,54 +1,48 @@
-use std::{fs::OpenOptions, sync::mpsc::Sender, thread, time::Duration};
+pub mod block_device;
+pub mod file_disk;
+pub mod init;
+pub mod types;
 
-use crate::{fs::FileSystem, shell::BootProgress};
+// 对外导出常用类型，便于上层使用
+pub use block_device::BlockDevice;
+pub use file_disk::FileDisk;
+pub use types::{Block, BLOCK_COUNT, BLOCK_SIZE, DISK_SIZE};
 
-pub fn perform_disk_initialization(tx: Sender<BootProgress>) {
-    // 定义磁盘参数
-    const DISK_PATH: &str = "disk.img";
-    const TOTAL_BLOCKS: u64 = 4096;
-    const BLOCK_SIZE: u64 = 4 * 1024; // 4 KB
+// src/disk/mod.rs 底部添加
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{mpsc::channel, Arc};
 
-    const DISK_SIZE: u64 = BLOCK_SIZE * TOTAL_BLOCKS; // 4KB * 4096 = 16MB
+    #[test]
+    fn test_file_disk_read_write() {
+        // 创建进度通道（模拟 UI 接收 BootProgress）
+        let (tx, rx) = channel();
 
-    // 初始化虚拟磁盘
-    tx.send(BootProgress::Step("🧠 Initializing virtual disk..."))
-        .unwrap();
+        // 初始化虚拟磁盘（路径可自定义）
+        let disk = Arc::new(FileDisk::new("test_disk.img", &tx).unwrap());
 
-    // 创建文件
-    let file_result = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(DISK_PATH);
-
-    let file = match file_result {
-        Ok(f) => f,
-        Err(e) => {
-            tx.send(BootProgress::Finished(Err(Box::new(e)))).unwrap();
-            return;
+        // 读取异步进度信息（非必须）
+        while let Ok(msg) = rx.try_recv() {
+            println!("{:?}", msg);
         }
-    };
 
-    // 如果文件是新创建的，需要设置其大小，这个过程可以绑定到进度条
-    if file.metadata().unwrap().len() < DISK_SIZE {
-        // 将创建文件的过程与进度条的前 50% 绑定
-        file.set_len(DISK_SIZE).unwrap(); // 顶分配空间
-        for i in 0..50 {
-            tx.send(BootProgress::Progress(i)).unwrap();
-            thread::sleep(Duration::from_millis(5)); // 模拟耗时
-        }
-    } else {
-        // 如果文件已存在，直接跳过这部分进度
-        tx.send(BootProgress::Progress(50)).unwrap();
+        // 准备一个写入缓冲区（Block 大小为 4KB）
+        let mut write_buf: Block = [0u8; BLOCK_SIZE];
+        let content = b"hello tiny fs";
+        write_buf[..content.len()].copy_from_slice(content);
+
+        // 写入第 0 号块
+        disk.write_block(0, &write_buf).unwrap();
+
+        // 读取回来验证
+        let mut read_buf: Block = [0u8; BLOCK_SIZE];
+        disk.read_block(0, &mut read_buf).unwrap();
+
+        // 转换为字符串并检查是否一致
+        let read_str = String::from_utf8_lossy(&read_buf[..content.len()]);
+        assert_eq!(read_str, "hello tiny fs");
+
+        println!("✅ Disk read/write test passed! Read: {}", read_str);
     }
-
-    // 第二阶段：挂载文件系统
-    tx.send(BootProgress::Step("⚙️ Mounting file system..."))
-        .unwrap();
-
-    // 将挂载/格式化的过程与进度条的后 50% 绑定
-    // let mount_result = FileSystem::mount(DISK_PATH, TOTAL_BLOCKS, &tx);
-
-    // 无论挂载成功与否，都将最终结果发送回去
-    // tx.send(BootProgress::Finished(mount_result)).unwrap();
 }
