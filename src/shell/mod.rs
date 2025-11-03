@@ -2,7 +2,7 @@ pub mod command;
 pub mod parse;
 
 use crate::{
-    disk,
+    disk::perform_disk_initialization,
     fs::FileSystem,
     shell::{command::execute_command, parse::parse_command},
 };
