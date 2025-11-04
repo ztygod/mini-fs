@@ -13,7 +13,7 @@ use crate::{
     },
     shell::BootProgress,
 };
-
+#[derive(Debug)]
 pub struct FileDisk {
     file: Mutex<File>,
 }
@@ -33,7 +33,7 @@ impl FileDisk {
             file.set_len(DISK_SIZE)?;
 
             for i in 0..50 {
-                tx.send(BootProgress::Progress(i)).unwrap();
+                let _ = tx.send(BootProgress::Progress(i));
                 thread::sleep(Duration::from_millis(5)); // 模拟耗时
             }
         } else {
