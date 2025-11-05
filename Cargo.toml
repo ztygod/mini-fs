@@ -12,3 +12,5 @@ indicatif = "0.17"
 crossterm = "0.27"
 dirs = "5"
 serde = "1.0.228"
+uuid = { version = "1", features = ["v4"] }
+bincode = "2.1"
