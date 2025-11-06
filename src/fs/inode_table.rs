@@ -1,7 +1,10 @@
+use std::io::empty;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
     disk::{BlockDevice, FileDisk},
+    fs::inode_bitmap::{self, InodeBitmap},
     utils::{current_timestamp, generate_uuid},
 };
 
@@ -33,6 +36,7 @@ impl InodeTable {
 
     pub fn alloc_inode(
         &mut self,
+        inode_bitmap: &mut InodeBitmap,
         inode_type: InodeType,
         uid: u32,
         gid: u32,
@@ -42,14 +46,18 @@ impl InodeTable {
             return None;
         }
 
-        let inode = Inode::new(inode_type, uid, gid, perm);
-        self.inodes.push(inode.clone());
-        Some(self.inodes.len())
+        if let Some(index) = inode_bitmap.alloc() {
+            let inode = Inode::new(inode_type, uid, gid, perm);
+            self.inodes[index as usize] = inode;
+            Some(index as usize)
+        } else {
+            None
+        }
     }
 
-    pub fn free_inode(&mut self, index: u64) {
-        // 从表中移除 inode
-        self.inodes[index as usize] = None;
+    pub fn free_inode(&mut self, inode_bitmap: &mut InodeBitmap, inode_index: u64) {
+        self.inodes[inode_index as usize] = Inode::empty();
+        inode_bitmap.free(inode_index);
     }
 
     pub fn get_inode(&self, index: u64) -> Option<&Inode> {
@@ -60,49 +68,67 @@ impl InodeTable {
         self.inodes.get_mut(index as usize)
     }
 
-    pub fn load(disk: &mut FileDisk, start_block: u64, total_inodes: u64) -> Self {
-        // 每块 4KB
-        let block_size = 4096;
-
-        // 计算 inode 表占用的总块数
-        let inode_size = std::mem::size_of::<Inode>(); // 每个 inode 的大小
-        let total_bytes = (total_inodes as usize) * inode_size;
-        let total_blocks = (total_bytes + block_size - 1) / block_size;
-
-        // 读取所有块到一个 Vec<u8>
-        let mut bytes = Vec::with_capacity(total_blocks * block_size);
-        let mut block_buf: [u8; 4096] = [0; 4096];
-        for i in 0..total_blocks {
-            disk.read_block(start_block + i as u64, &mut block_buf)
-                .unwrap();
-            bytes.extend_from_slice(&block_buf);
-        }
-
-        // 截掉多余的字节（可能最后一块填充了 0）
-        bytes.truncate(total_bytes);
-
-        // 反序列化
-        let inodes: Vec<Inode> = bincode::deserialize(&bytes).unwrap();
-
-        Self {
-            inodes,
-            start_block,
-            total_inodes,
-        }
-    }
-
     pub fn sync(&self, disk: &mut FileDisk) -> std::io::Result<()> {
-        let bytes = bincode::serialize(&self.inodes).unwrap();
-        let total_blocks = (bytes.len() as u64 + 4095) / 4096;
-        let mut block_buf = [0u8; 4096];
+        // 1. 序列化
+        let bytes = bincode::serialize(&self.inodes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let total_blocks = (bytes.len() as u64 + 8 + 4095) / 4096; // +8 for length prefix
 
-        for i in 0..total_blocks {
-            let start = (i * 4096) as usize;
-            let end = std::cmp::min(start + 4096, bytes.len());
-            block_buf[..end - start].copy_from_slice(&bytes[start..end]);
+        // 2. 把 length 写在第一个块的前 8 字节
+        let mut block_buf = [0u8; 4096];
+        // zero already by init
+        let len_bytes = (bytes.len() as u64).to_le_bytes();
+        block_buf[..8].copy_from_slice(&len_bytes);
+
+        // copy first chunk after prefix
+        let first_chunk = std::cmp::min(4096 - 8, bytes.len());
+        block_buf[8..8 + first_chunk].copy_from_slice(&bytes[..first_chunk]);
+        disk.write_block(self.start_block, &block_buf)?;
+
+        // 写剩余块
+        let mut offset = first_chunk;
+        for i in 1..total_blocks {
+            let mut block_buf = [0u8; 4096]; // 清零
+            let chunk = std::cmp::min(4096, bytes.len() - offset);
+            block_buf[..chunk].copy_from_slice(&bytes[offset..offset + chunk]);
             disk.write_block(self.start_block + i, &block_buf)?;
+            offset += chunk;
         }
         Ok(())
+    }
+
+    pub fn load(disk: &mut FileDisk, start_block: u64) -> std::io::Result<Self> {
+        // 先读第一个块，取得序列化长度
+        let mut block_buf = [0u8; 4096];
+        disk.read_block(start_block, &mut block_buf)?;
+        let mut len_bytes = [0u8; 8];
+        len_bytes.copy_from_slice(&block_buf[..8]);
+        let serialized_len = u64::from_le_bytes(len_bytes) as usize;
+
+        let total_blocks = (serialized_len + 8 + 4095) / 4096;
+
+        let mut bytes = Vec::with_capacity(serialized_len);
+        // first block: 从 8 开始取
+        let first_chunk = std::cmp::min(4096 - 8, serialized_len);
+        bytes.extend_from_slice(&block_buf[8..8 + first_chunk]);
+        let mut read = first_chunk;
+
+        for i in 1..total_blocks {
+            disk.read_block(start_block + i as u64, &mut block_buf)?;
+            let chunk = std::cmp::min(4096, serialized_len - read);
+            bytes.extend_from_slice(&block_buf[..chunk]);
+            read += chunk;
+        }
+
+        let inodes: Vec<Inode> = bincode::deserialize(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let total_inodes = inodes.clone().len();
+        Ok(Self {
+            inodes,
+            start_block,
+            total_inodes: total_inodes as u64,
+        })
     }
 }
 
@@ -144,6 +170,24 @@ impl Inode {
         }
     }
 
+    pub fn empty() -> Self {
+        Self {
+            id: String::new(),
+            inode_type: InodeType::File,
+            size: 0,
+            permissions: 0,
+            uid: 0,
+            gid: 0,
+            link_count: 0,
+            atime: 0,
+            mtime: 0,
+            ctime: 0,
+            direct_blocks: [0; DIRECT_PTRS],
+            indirect_block: None,
+            double_indirect_block: None,
+        }
+    }
+
     // 更新时间戳
     pub fn touch(&mut self) {
         self.atime = current_timestamp();
@@ -167,7 +211,6 @@ impl Inode {
         for ptr in self.direct_blocks.iter_mut() {
             if *ptr == 0 {
                 *ptr = block_id;
-                self.inc_link();
                 return Ok(());
             }
         }

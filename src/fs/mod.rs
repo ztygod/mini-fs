@@ -9,6 +9,7 @@ use crate::{
 pub mod config;
 pub mod data_area;
 pub mod data_block_bitmap;
+pub mod directory;
 pub mod error;
 pub mod inode_bitmap;
 pub mod inode_table;
