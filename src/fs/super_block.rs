@@ -23,7 +23,7 @@ pub struct SuperBlock {
 }
 
 impl SuperBlock {
-    fn new(total_inodes: u64) -> Self {
+    pub fn new(total_inodes: u64) -> Self {
         let block_size: u64 = 4096; // 4KB
         let total_blocks = 64 * 1024 * 1024 / block_size; // 64MB / 4KB = 16384 块
 

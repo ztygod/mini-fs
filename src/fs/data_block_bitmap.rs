@@ -11,10 +11,10 @@ pub struct DataBlockBitmap {
 
 impl DataBlockBitmap {
     pub fn new(total_blocks: u64, start_block: u64) -> Self {
-        let btye_len = ((total_blocks + 7) / 8) as usize;
+        let byte_len = ((total_blocks + 7) / 8) as usize;
 
         Self {
-            bits: vec![0; btye_len],
+            bits: vec![0; byte_len],
             total_blocks,
             free_blocks: total_blocks,
             start_block,
