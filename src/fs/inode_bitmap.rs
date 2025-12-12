@@ -22,6 +22,26 @@ impl InodeBitmap {
         }
     }
 
+    pub fn alloc_specific(&mut self, index: usize) -> Result<(), String> {
+        if index as u64 >= self.total_inodes {
+            return Err("index out of range".into());
+        }
+
+        let byte_index = index / 8;
+        let bit_index = index % 8;
+
+        // 检查是否已使用
+        if (self.bits[byte_index] & (1 << bit_index)) != 0 {
+            return Err("inode already used".into());
+        }
+
+        // 设置为使用
+        self.bits[byte_index] |= 1 << bit_index;
+        self.free_inodes -= 1;
+
+        Ok(())
+    }
+
     // 分配一个空闲 inode，返回 inode 编号（从 0 开始）
     pub fn alloc(&mut self) -> Option<u64> {
         for (byte_index, byte) in self.bits.iter_mut().enumerate() {

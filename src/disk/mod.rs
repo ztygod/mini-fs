@@ -7,7 +7,7 @@ pub mod types;
 pub use block_device::BlockDevice;
 pub use file_disk::FileDisk;
 pub use init::perform_disk_initialization;
-pub use types::{Block, BLOCK_COUNT, BLOCK_SIZE, DISK_SIZE};
+pub use types::{Block, BLOCK_SIZE};
 
 // src/disk/mod.rs 底部添加
 #[cfg(test)]

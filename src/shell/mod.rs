@@ -112,10 +112,15 @@ pub fn start_shell() {
 
                 match parse_command(trimmed) {
                     Some(cmd) => {
-                        if let Err(e) = execute_command(&cmd, &mut current_dir) {
+                        // 传递 file_system 给 execute_command
+                        if let Err(e) = execute_command(&cmd, &mut current_dir, &mut file_system) {
                             println!("{} {}", "❌ Error:".red().bold(), e);
                         }
                         if matches!(cmd, command::Command::Exit) {
+                            // 退出前同步文件系统
+                            if let Err(e) = file_system.unmount() {
+                                eprintln!("Error unmounting file system: {}", e);
+                            }
                             println!("{}", "👋 Bye!".bright_yellow());
                             break;
                         }

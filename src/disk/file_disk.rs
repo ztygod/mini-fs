@@ -32,12 +32,12 @@ impl FileDisk {
 
             file.set_len(DISK_SIZE)?;
 
-            for i in 0..50 {
+            for i in 0..=100 {
                 let _ = tx.send(BootProgress::Progress(i));
-                thread::sleep(Duration::from_millis(5)); // 模拟耗时
+                thread::sleep(Duration::from_millis(20));
             }
         } else {
-            tx.send(BootProgress::Progress(50)).unwrap();
+            tx.send(BootProgress::Progress(100)).unwrap();
         }
 
         Ok(Self {
