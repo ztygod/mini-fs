@@ -178,7 +178,6 @@ impl FileSystem {
         // 同步 inode_table 和 super_block 到磁盘
         self.sync()?;
 
-        println!("[########################################] 100% ✅ Disk formatted successfully!");
         Ok(())
     }
 
@@ -312,8 +311,13 @@ impl FileSystem {
             }
         }
 
-        // 排序（按名字）
-        result.sort_by(|a, b| a.name.cmp(&b.name));
+        result.sort_by(|a, b| {
+            match (&a.entry_type, &b.entry_type) {
+                (DirEntryType::Directory, DirEntryType::File) => std::cmp::Ordering::Less, // 文件夹在前
+                (DirEntryType::File, DirEntryType::Directory) => std::cmp::Ordering::Greater, // 文件在后
+                _ => a.name.cmp(&b.name), // 同类型按名字排序
+            }
+        });
 
         Ok(result)
     }
@@ -509,13 +513,18 @@ impl FileSystem {
         let mut parent_dir: Directory =
             bincode::deserialize(block_data).map_err(|_| "Failed to deserialize directory")?;
 
-        // 修改这里：将 Option 转换为 Result
+        // 关键：重建 index_map
+        parent_dir.rebuild_index_map();
+
+        // 删除条目
         parent_dir
             .remove(name)
             .ok_or("Entry not found in directory")?;
 
-        let dir_bytes = bincode::serialize(&parent_dir).unwrap();
-        self.data_area.write_block(block_id, &dir_bytes).unwrap();
+        let dir_bytes = bincode::serialize(&parent_dir).map_err(|e| e.to_string())?;
+        self.data_area
+            .write_block(block_id, &dir_bytes)
+            .map_err(|e| e.to_string())?;
 
         parent_inode.size = dir_bytes.len() as u64;
         parent_inode.touch();
@@ -524,47 +533,36 @@ impl FileSystem {
     }
 
     pub fn find_inode(&self, path: &str) -> Result<u64, String> {
-        // 处理根目录
+        println!("🔍 find_inode called with path: {:?}", path);
+
         if path == "/" {
-            // 验证根目录的数据块
-            if let Some(root_inode) = self.inode_table.get_inode(0) {
-                println!(
-                    "Debug: root inode direct_blocks[0] = {}",
-                    root_inode.direct_blocks[0]
-                );
-                println!("Debug: root inode size = {}", root_inode.size);
-            }
             return Ok(0);
         }
 
-        // 标准化路径，移除开头的斜杠
-        let normalized_path = path.trim_start_matches('/');
+        let normalized_path = path.trim_start_matches('/').trim();
         if normalized_path.is_empty() {
             return Ok(0);
         }
 
-        // 分割路径组件
         let components: Vec<&str> = normalized_path
             .split('/')
             .filter(|s| !s.is_empty())
             .collect();
+        println!("Debug: path components = {:?}", components);
 
-        // 从根目录开始解析
-        let mut current_inode = 0u64;
+        let mut current_inode = 0u64; // 从根目录开始
 
         for component in components {
-            // 获取当前目录的inode
+            println!("Debug: resolving component: {}", component);
             let inode = self
                 .inode_table
                 .get_inode(current_inode)
                 .ok_or("Inode not found")?;
 
-            // 确保当前inode是目录
             if !matches!(inode.inode_type, InodeType::Directory) {
                 return Err("Path component is not a directory".to_string());
             }
 
-            // 读取目录数据块
             let block_id = inode.direct_blocks[0];
             if block_id == 0 {
                 return Err("Directory has no data block".to_string());
@@ -575,18 +573,25 @@ impl FileSystem {
                 .read_block(block_id)
                 .ok_or("Failed to read directory block")?;
 
-            // 反序列化目录结构
-            let directory: Directory =
-                bincode::deserialize(block_data).map_err(|_| "Failed to deserialize directory")?;
+            let mut directory = Directory::load_from_bytes(block_data)
+                .map_err(|_| "Failed to deserialize directory")?;
 
-            // 查找组件
             if let Some(inode_index) = directory.find(component) {
+                println!(
+                    "Debug: component '{}' resolved to inode {}",
+                    component, inode_index
+                );
                 current_inode = inode_index as u64;
             } else {
+                println!(
+                    "❌ component '{}' not found in current directory",
+                    component
+                );
                 return Err(format!("Path component not found: {}", component));
             }
         }
 
+        println!("✅ find_inode resolved to inode {}", current_inode);
         Ok(current_inode)
     }
 

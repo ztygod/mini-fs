@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// 目录项类型：文件或子目录
-#[derive(Debug, Serialize, Deserialize, Clone)]
+// 目录项类型
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum DirEntryType {
     File,
     Directory,
 }
 
-// 一个目录项：文件名 → inode_index + 类型
+// 一个目录项
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DirEntry {
     pub name: String,
@@ -19,14 +19,13 @@ pub struct DirEntry {
 // 目录结构
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Directory {
-    pub inode_index: usize,     // 该目录对应的 inode
-    pub entries: Vec<DirEntry>, // 保持顺序的目录项列表
-    #[serde(skip)] // 不序列化，用于快速索引
+    pub inode_index: usize,
+    pub entries: Vec<DirEntry>,
+    #[serde(skip)]
     pub index_map: HashMap<String, usize>, // name -> entries 索引
 }
 
 impl Directory {
-    // 新建目录
     pub fn new(inode_index: usize) -> Self {
         Self {
             inode_index,
@@ -35,7 +34,13 @@ impl Directory {
         }
     }
 
-    // 初始化 index_map（加载后使用）
+    // 从字节数组加载目录，自动重建 index_map
+    pub fn load_from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut dir: Directory = bincode::deserialize(bytes)?;
+        dir.rebuild_index_map();
+        Ok(dir)
+    }
+
     pub fn rebuild_index_map(&mut self) {
         self.index_map.clear();
         for (i, entry) in self.entries.iter().enumerate() {
@@ -53,7 +58,6 @@ impl Directory {
         if self.index_map.contains_key(name) {
             return Err(format!("Entry '{}' already exists", name));
         }
-
         self.entries.push(DirEntry {
             name: name.to_string(),
             inode_index,
@@ -77,20 +81,23 @@ impl Directory {
 
     // 查找目录项，返回 inode_index
     pub fn find(&self, name: &str) -> Option<usize> {
+        println!("Directory: {:?}", self);
         self.index_map
             .get(name)
             .map(|&idx| self.entries[idx].inode_index)
     }
 
-    // 列出所有文件名
-    pub fn list(&self) -> Vec<String> {
-        self.entries.iter().map(|e| e.name.clone()).collect()
+    pub fn get(&self, name: &str) -> Option<&DirEntry> {
+        self.index_map.get(name).map(|&idx| &self.entries[idx])
     }
 
-    // 判断是否为目录
-    pub fn is_directory(&self, name: &str) -> Option<bool> {
-        self.index_map
-            .get(name)
-            .map(|&idx| matches!(self.entries[idx].entry_type, DirEntryType::Directory))
+    pub fn list_sorted(&self) -> Vec<String> {
+        let mut entries = self.entries.clone();
+        entries.sort_by(|a, b| match (&a.entry_type, &b.entry_type) {
+            (DirEntryType::Directory, DirEntryType::File) => std::cmp::Ordering::Less,
+            (DirEntryType::File, DirEntryType::Directory) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        });
+        entries.into_iter().map(|e| e.name).collect()
     }
 }
