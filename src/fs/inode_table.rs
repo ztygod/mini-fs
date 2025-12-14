@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub const DIRECT_PTRS: usize = 12;
 pub const PTRS_PER_BLOCK: usize = 1024;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum InodeType {
     File,
     Directory,
@@ -122,7 +122,7 @@ impl InodeTable {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Inode {
     pub id: String,
     pub inode_type: InodeType,

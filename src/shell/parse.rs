@@ -19,7 +19,7 @@ pub fn parse_command(input: &str) -> Option<Command> {
         "rm" => args.get(0).map(|&name| Command::Rm(name.to_string())),
         "cd" => args.get(0).map(|&name| Command::Cd(name.to_string())),
         "read" => args.get(0).map(|&name| Command::Read(name.to_string())),
-        "wirte" => {
+        "write" => {
             if args.len() >= 2 {
                 Some(Command::Write(
                     args.get(0)?.to_string(),
@@ -29,6 +29,7 @@ pub fn parse_command(input: &str) -> Option<Command> {
                 None
             }
         }
+        "open" => args.get(0).map(|&name| Command::Open(name.to_string())),
         "stat" => args.get(0).map(|&name| Command::Stat(name.to_string())),
         "format" => Some(Command::Format),
         "exit" => Some(Command::Exit),

@@ -8,6 +8,7 @@ use crate::{
         inode_table::{Inode, InodeTable, InodeType},
         super_block::SuperBlock,
     },
+    utils::{current_timestamp, split_path},
 };
 
 pub mod config;
@@ -18,6 +19,25 @@ pub mod error;
 pub mod inode_bitmap;
 pub mod inode_table;
 pub mod super_block;
+
+bitflags::bitflags! {
+    #[derive(Debug)]
+    pub struct OpenFlags: u32 {
+        const READ   = 0b0001;
+        const WRITE  = 0b0010;
+        const CREATE = 0b0100;
+        const TRUNC  = 0b1000;
+        const APPEND = 0b1_0000;
+    }
+}
+
+#[derive(Debug)]
+pub struct FileHandle {
+    pub inode_id: u64,
+    pub offset: u64,
+    pub flags: OpenFlags,
+}
+
 #[derive(Debug)]
 pub struct FileSystem {
     pub disk: FileDisk,               // 底层磁盘抽象层
@@ -234,48 +254,95 @@ impl FileSystem {
     }
 
     /// 创建文件  
-    pub fn create_file(
-        &mut self,
-        parent_path: &str,
-        name: &str,
-        content: &[u8],
-    ) -> Result<u64, String> {
-        // 1. 分配inode
+    pub fn create_file(&mut self, parent_path: &str, name: &str) -> Result<u64, String> {
+        // 0. 检查文件是否已存在
+        let full_path = format!("{}/{}", parent_path, name);
+        if self.find_inode(&full_path).is_ok() {
+            return Err("File already exists".to_string());
+        }
+
+        // 1. 分配 inode
         let inode_id = self
             .inode_table
             .alloc_inode(&mut self.inode_bitmap, InodeType::File, 0, 0, 0o644)
             .ok_or("Failed to allocate inode")?;
 
-        // 2. 分配数据块（如果需要）
-        let mut blocks_used = 0;
-        if !content.is_empty() {
-            let block_id = self
-                .data_bitmap
-                .alloc()
-                .ok_or("Failed to allocate data block")?;
+        let now = current_timestamp();
 
-            self.data_area
-                .write_block(block_id, content)
-                .map_err(|e| e)?;
-
-            // 3. 更新inode
-            if let Some(inode) = self.inode_table.get_inode_mut(inode_id as u64) {
-                inode.add_block(block_id).map_err(|e| e)?;
-                inode.size = content.len() as u64;
-                inode.touch();
-            }
-            blocks_used = 1;
+        // 2. 初始化 inode
+        if let Some(inode) = self.inode_table.get_inode_mut(inode_id as u64) {
+            inode.size = 0;
+            inode.ctime = now;
+            inode.mtime = now;
+            // atime 不动
         }
 
-        // 4. 更新父目录
+        // 3. 添加目录项
         self.add_directory_entry(parent_path, name, inode_id, DirEntryType::File)?;
 
-        // 5. 更新计数器
+        // 4. 更新父目录 inode
+        let parent_inode_id = self.find_inode(parent_path)?;
+        if let Some(parent_inode) = self.inode_table.get_inode_mut(parent_inode_id) {
+            parent_inode.mtime = now;
+            parent_inode.ctime = now;
+        }
+
+        // 5. 更新超级块
         self.super_block.free_inode -= 1;
-        self.super_block.free_blocks -= blocks_used;
         self.super_block.dirty = true;
 
         Ok(inode_id as u64)
+    }
+
+    pub fn write_file(&mut self, path: &str, content: &[u8]) -> Result<(), String> {
+        let inode_id = self.find_inode(path)?;
+        let now = current_timestamp();
+
+        // 1. 回收旧数据块
+        self.free_file_blocks(inode_id)?;
+
+        // 2. 写新数据
+        let mut blocks_used = 0;
+        if !content.is_empty() {
+            let block_id = self.data_bitmap.alloc().ok_or("No free data blocks")?;
+
+            self.data_area.write_block(block_id, content)?;
+
+            if let Some(inode) = self.inode_table.get_inode_mut(inode_id) {
+                inode.add_block(block_id)?;
+                inode.size = content.len() as u64;
+                inode.mtime = now;
+            }
+
+            blocks_used = 1;
+        }
+
+        // 3. ctime 不变（只是内容写）
+        self.super_block.free_blocks -= blocks_used;
+        self.super_block.dirty = true;
+
+        Ok(())
+    }
+
+    pub fn create_or_write_file(
+        &mut self,
+        parent_path: &str,
+        name: &str,
+        content: &[u8],
+    ) -> Result<u64, String> {
+        let full_path = format!("{}/{}", parent_path, name);
+
+        match self.find_inode(&full_path) {
+            Ok(inode_id) => {
+                self.write_file(&full_path, content)?;
+                Ok(inode_id)
+            }
+            Err(_) => {
+                let inode_id = self.create_file(parent_path, name)?;
+                self.write_file(&full_path, content)?;
+                Ok(inode_id)
+            }
+        }
     }
 
     /// 列出目录内容  
@@ -482,14 +549,14 @@ impl FileSystem {
     }
 
     /// 获取文件状态信息  
-    pub fn stat(&self, path: &str, name: &str) -> Result<(u64, String, u64), String> {
-        let file_inode_id = self.find_inode(&format!("{}/{}", path, name))?;
+    pub fn stat(&self, path: &str, name: &str) -> Result<Inode, String> {
+        let inode_id = self.find_inode(&format!("{}/{}", path, name))?;
         let inode = self
             .inode_table
-            .get_inode(file_inode_id)
+            .get_inode(inode_id)
             .ok_or("File inode not found")?;
 
-        Ok((file_inode_id, format!("{:?}", inode.inode_type), inode.size))
+        Ok(inode.clone())
     }
 
     // 辅助方法：从目录中移除条目
@@ -595,41 +662,118 @@ impl FileSystem {
         Ok(current_inode)
     }
 
-    // /// 分配inode（供内部使用）
-    // pub fn alloc_inode(&mut self) -> Result<u64, String> {
-    //     // 检查是否有空闲inode
-    //     if self.super_block.free_inode == 0 {
-    //         return Err("No free inodes available".to_string());
-    //     }
+    pub fn open(&mut self, path: &str, flags: OpenFlags) -> Result<FileHandle, String> {
+        let inode_id = match self.find_inode(path) {
+            Ok(id) => {
+                // 文件存在
+                if flags.contains(OpenFlags::TRUNC) && flags.contains(OpenFlags::WRITE) {
+                    self.truncate_file(id)?;
+                }
+                id
+            }
+            Err(_) => {
+                // 文件不存在
+                if flags.contains(OpenFlags::CREATE) {
+                    self.create_file_from_path(path)?
+                } else {
+                    return Err("File not found".to_string());
+                }
+            }
+        };
 
-    //     // 从位图分配
-    //     match self.inode_bitmap.alloc() {
-    //         Some(inode_id) => {
-    //             // 更新SuperBlock计数器
-    //             self.super_block.free_inode -= 1;
-    //             self.super_block.dirty = true;
-    //             Ok(inode_id)
-    //         }
-    //         None => Err("Failed to allocate inode from bitmap".to_string()),
-    //     }
-    // }
+        // 类型检查：不能 open 目录
+        let inode = self
+            .inode_table
+            .get_inode(inode_id)
+            .ok_or("Inode not found")?;
 
-    // /// 分配数据块（供内部使用）
-    // pub fn alloc_block(&mut self) -> Result<u64, String> {
-    //     // 检查是否有空闲块
-    //     if self.super_block.free_blocks == 0 {
-    //         return Err("No free blocks available".to_string());
-    //     }
+        if inode.inode_type != InodeType::File {
+            return Err("Cannot open directory as file".into());
+        }
 
-    //     // 从位图分配
-    //     match self.data_bitmap.alloc() {
-    //         Some(block_id) => {
-    //             // 更新SuperBlock计数器
-    //             self.super_block.free_blocks -= 1;
-    //             self.super_block.dirty = true;
-    //             Ok(block_id)
-    //         }
-    //         None => Err("Failed to allocate block from bitmap".to_string()),
-    //     }
-    // }
+        // 权限检查（简化版）
+        self.check_open_permissions(&inode, &flags)?;
+
+        // offset 初始化
+        let offset = if flags.contains(OpenFlags::APPEND) {
+            inode.size
+        } else {
+            0
+        };
+
+        Ok(FileHandle {
+            inode_id,
+            offset,
+            flags,
+        })
+    }
+
+    fn check_open_permissions(&self, inode: &Inode, flags: &OpenFlags) -> Result<(), String> {
+        if flags.contains(OpenFlags::READ) && inode.permissions & 0o400 == 0 {
+            return Err("Permission denied: read".into());
+        }
+
+        if flags.contains(OpenFlags::WRITE) && inode.permissions & 0o200 == 0 {
+            return Err("Permission denied: write".into());
+        }
+
+        Ok(())
+    }
+
+    pub fn free_file_blocks(&mut self, inode_id: u64) -> Result<(), String> {
+        let inode = self
+            .inode_table
+            .get_inode_mut(inode_id)
+            .ok_or("Inode not found")?;
+
+        let mut freed = 0;
+
+        // 1. 释放 direct blocks
+        for block in inode.direct_blocks.iter_mut() {
+            if *block != 0 {
+                self.data_bitmap.free(*block);
+                *block = 0;
+                freed += 1;
+            }
+        }
+
+        // 2. 释放 indirect block（注意：你现在只是“单个块”）
+        if let Some(block_id) = inode.indirect_block.take() {
+            self.data_bitmap.free(block_id);
+            freed += 1;
+        }
+
+        // 3. double indirect（你目前还没用到，可以先占位）
+        if let Some(block_id) = inode.double_indirect_block.take() {
+            self.data_bitmap.free(block_id);
+            freed += 1;
+        }
+
+        // 4. 更新 inode
+        inode.size = 0;
+
+        // 注意：mtime 在 write_file 里更新
+        // ctime 不变（内容变化不算元数据变化）
+
+        // 5. 更新超级块
+        self.super_block.free_blocks += freed;
+        self.super_block.dirty = true;
+
+        Ok(())
+    }
+
+    pub fn truncate_file(&mut self, inode_id: u64) -> Result<(), String> {
+        self.free_file_blocks(inode_id)?;
+
+        if let Some(inode) = self.inode_table.get_inode_mut(inode_id) {
+            inode.size = 0;
+            inode.mtime = current_timestamp();
+        }
+        Ok(())
+    }
+
+    fn create_file_from_path(&mut self, path: &str) -> Result<u64, String> {
+        let (parent, name) = split_path(path)?;
+        self.create_file(parent, name)
+    }
 }

@@ -4,7 +4,8 @@ use std::error::Error;
 use std::{thread, time::Duration};
 
 use crate::fs::directory::DirEntryType;
-use crate::fs::FileSystem;
+use crate::fs::{FileSystem, OpenFlags};
+use crate::utils::format_time;
 
 #[derive(Debug)]
 pub enum Command {
@@ -19,6 +20,7 @@ pub enum Command {
     Read(String),
     Write(String, String),
     Stat(String),
+    Open(String),
     Format,
     Exit,
 }
@@ -56,7 +58,7 @@ pub fn execute_command(
             ),
             Err(e) => println!("❌ {}", e),
         },
-        Command::Create(name) => match fs.create_file(current_dir, name, &[]) {
+        Command::Create(name) => match fs.create_or_write_file(current_dir, name, &[]) {
             Ok(_) => println!(
                 "📝 Created file: {}",
                 format!("{}/{}", current_dir, name).green()
@@ -113,7 +115,7 @@ pub fn execute_command(
             Err(e) => println!("❌ {}", e),
         },
         Command::Write(file, content) => {
-            match fs.create_file(current_dir, file, content.as_bytes()) {
+            match fs.create_or_write_file(current_dir, file, content.as_bytes()) {
                 Ok(_) => {
                     println!(
                         "✏️  Writing to {}",
@@ -125,20 +127,79 @@ pub fn execute_command(
             }
         }
         Command::Stat(file) => match fs.stat(current_dir, file) {
-            Ok((inode_id, file_type, size)) => {
+            Ok(inode) => {
                 println!(
-                    "{}\n{}: {}\n{}: {}\n{}: {} bytes\n",
+                    "{}\n\
+             {}: {}\n\
+             {}: {:?}\n\
+             {}: {}\n\
+             {}: {} bytes\n\
+             {}: {}\n\
+             {}: {}\n\
+             {}: {:04o}\n\
+             {}: {}\n\
+             {}: {}\n\
+             {}: {}\n\
+             {}: {}\n\
+             {}: {}\n",
                     "📊 File Info".bright_yellow().bold(),
                     "Name".blue(),
                     file,
                     "Type".blue(),
-                    file_type,
+                    inode.inode_type,
+                    "Inode ID".blue(),
+                    inode.id,
                     "Size".blue(),
-                    size
+                    inode.size,
+                    "Blocks".blue(),
+                    inode.block_count(),
+                    "Links".blue(),
+                    inode.link_count,
+                    "Permissions".blue(),
+                    inode.permissions,
+                    "UID".blue(),
+                    inode.uid,
+                    "GID".blue(),
+                    inode.gid,
+                    "Access".blue(),
+                    format_time(inode.atime),
+                    "Modify".blue(),
+                    format_time(inode.mtime),
+                    "Change".blue(),
+                    format_time(inode.ctime),
                 );
             }
             Err(e) => println!("❌ {}", e),
         },
+        Command::Open(file) => {
+            let path = format!("{}/{}", current_dir, file);
+
+            // 打开文件（read-only）
+            match fs.open(&path, OpenFlags::READ) {
+                Ok(mut fh) => {
+                    println!("📂 Opening file: {}", path.cyan());
+
+                    // 读取整个文件内容
+                    let inode = fs
+                        .inode_table
+                        .get_inode(fh.inode_id)
+                        .ok_or("Inode not found")?;
+
+                    let mut content = vec![0u8; inode.size as usize];
+                    match fs.read_file(&path, file) {
+                        Ok(content) => {
+                            if let Ok(s) = String::from_utf8(content) {
+                                println!("{}", s);
+                            } else {
+                                println!("<binary data>");
+                            }
+                        }
+                        Err(e) => println!("❌ {}", e),
+                    }
+                }
+                Err(e) => println!("❌ open error: {}", e),
+            }
+        }
         Command::Format => match fs.format() {
             Ok(_) => {
                 println!("💾 Formatting virtual disk...");

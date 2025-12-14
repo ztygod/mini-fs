@@ -14,3 +14,5 @@ dirs = "5"
 serde = "1.0.228"
 uuid = { version = "1", features = ["v4"] }
 bincode = "1.3"
+chrono = "0.4.42"
+bitflags = "2.10.0"
